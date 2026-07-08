@@ -37,63 +37,133 @@ def normalize_ws(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
-def get_gt_mask(original: str, gt_masked: str) -> List[bool]:
-    """
-    Construye la máscara binaria de caracteres del ground truth.
-
-    Enfoque: diff entre original y gt_masked (sin marcadores), ambos
-    normalizados. Las partes eliminadas (en original, no en clean) son PII.
-
-    Returns: lista de bool del mismo largo que `original`, True donde hay PII.
-    """
-    if not MARKER_PATTERN.search(gt_masked):
-        return [False] * len(original)
-
-    import difflib
-
-    # Normalizar ambos textos
-    norm_orig = re.sub(r'\s+', ' ', original).strip()
-
-    # gt_masked sin marcadores
-    clean = re.sub(r'\[\*\*\w+\*\*\]', '', gt_masked)
-    norm_clean = re.sub(r'\s+', ' ', clean).strip()
-
-    # Diff
-    matcher = difflib.SequenceMatcher(None, norm_orig, norm_clean, autojunk=False)
-
-    # Extraer spans PII: opcode 'delete' significa texto en original no en clean
-    pii_spans = []  # (start, end) en norm_orig
-    for op, a1, a2, b1, b2 in matcher.get_opcodes():
-        if op == 'delete':
-            pii_spans.append((a1, a2))
-
-    # Construir mapping: norm_orig index -> posiciones en original
-    no2orig = []
+def _norm_to_orig_mapping(original: str) -> List[int]:
+    """Construye mapping: norm_orig index -> posición en original."""
+    mapping = []
     in_ws = False
     for oi, ch in enumerate(original):
         if ch in ' \t\n\r\f\v':
             if not in_ws:
-                no2orig.append(oi)
+                mapping.append(oi)
                 in_ws = True
         else:
-            no2orig.append(oi)
+            mapping.append(oi)
             in_ws = False
+    return mapping
 
-    # Construir máscara
+
+def get_gt_mask(original: str, gt_masked: str) -> List[bool]:
+    """Máscara binaria de GT (True = PII)."""
+    if not MARKER_PATTERN.search(gt_masked):
+        return [False] * len(original)
+    spans = get_gt_spans(original, gt_masked)
     mask = [False] * len(original)
-    for a1, a2 in pii_spans:
-        for no_idx in range(a1, min(a2, len(no2orig))):
-            oi = no2orig[no_idx]
-            if 0 <= oi < len(mask):
-                mask[oi] = True
-        # También marcar whitespace antes/después si existe
-        if a1 > 0 and a1 - 1 < len(no2orig):
-            ws_pos = no2orig[a1 - 1]
-            if ws_pos < len(mask) and original[ws_pos] in ' \t\n\r\f\v':
-                # El espacio antes del PII podría ser parte del texto original
-                pass
-
+    for s, e, _ in spans:
+        for i in range(s, e):
+            if 0 <= i < len(mask):
+                mask[i] = True
     return mask
+
+
+def get_gt_spans(original: str, gt_masked: str) -> List[Tuple[int, int, str]]:
+    """
+    Extrae spans PII del ground truth con su tipo de entidad.
+
+    Usa la alineación entre original y gt_masked (sin marcadores)
+    para localizar qué texto fue reemplazado por cada [**TYPE**].
+
+    Returns: lista de (start, end, entity_type) en el texto original.
+    """
+    if not MARKER_PATTERN.search(gt_masked):
+        return []
+
+    import difflib
+
+    # 1. Extraer marcadores con sus tipos
+    markers = list(MARKER_PATTERN.finditer(gt_masked))
+    marker_types = [m.group(1) for m in markers]
+
+    # 2. Construir texto "tokenizado": reemplazar cada marcador con \x00ID\x00
+    tokens_seq = []
+    last_end = 0
+    for i, m in enumerate(markers):
+        tokens_seq.append(gt_masked[last_end:m.start()])
+        tokens_seq.append(f"\x00{i:X}\x00")
+        last_end = m.end()
+    tokens_seq.append(gt_masked[last_end:])
+    tokenized_masked = "".join(tokens_seq)
+
+    # 3. Normalizar ambos
+    norm_orig = re.sub(r'\s+', ' ', original).strip()
+    norm_tok = re.sub(r'\s+', ' ', tokenized_masked).strip()
+
+    # 4. Alinear norm_tok con norm_orig
+    matcher = difflib.SequenceMatcher(None, norm_tok, norm_orig, autojunk=False)
+
+    # 5. Construir mapping norm_orig -> original
+    no2orig = _norm_to_orig_mapping(original)
+
+    # 6. Para cada opcode 'replace' que contenga un token, extraer el span en original
+    gt_spans = []
+
+    for op, a1, a2, b1, b2 in matcher.get_opcodes():
+        if op != 'replace':
+            continue
+        # Buscar si alguna posición en [a1, a2) contiene un token
+        tok_span = norm_tok[a1:a2]
+        for i, marker_type in enumerate(marker_types):
+            tok = f"\x00{i:X}\x00"
+            pos = tok_span.find(tok)
+            if pos >= 0:
+                # Este reemplazo corresponde al marcador i
+                # El span PII en norm_orig es [b1, b2)
+                orig_start = no2orig[b1] if b1 < len(no2orig) else 0
+                orig_end = no2orig[b2 - 1] + 1 if b2 - 1 < len(no2orig) else len(original)
+                gt_spans.append((orig_start, orig_end, marker_type))
+                break
+
+    # Fallback para marcadores no encontrados en replace: búsqueda contextual
+    found_mask = [False] * len(marker_types)
+    for _, _, etype in gt_spans:
+        for i, mt in enumerate(marker_types):
+            if mt == etype and not found_mask[i]:
+                found_mask[i] = True
+                break
+
+    # Para marcadores no encontrados, intentar búsqueda por contexto
+    for i, (m, etype) in enumerate(zip(markers, marker_types)):
+        if found_mask[i]:
+            continue
+        # Buscar contexto antes/después del marcador en gt_masked
+        ctx_before = gt_masked[max(0, m.start() - 40):m.start()]
+        ctx_after = gt_masked[m.end():min(len(gt_masked), m.end() + 40)]
+        ctx_before_norm = re.sub(r'\s+', ' ', ctx_before).strip()
+        ctx_after_norm = re.sub(r'\s+', ' ', ctx_after).strip()
+
+        # Buscar en original
+        search_from = 0
+        for prev_s, prev_e, _ in gt_spans:
+            search_from = max(search_from, prev_e)
+
+        idx_before = norm_orig.find(ctx_before_norm, _norm_to_orig_mapping(original).index(search_from) if search_from < len(no2orig) else 0)
+        if idx_before >= 0:
+            orig_start = no2orig[idx_before + len(ctx_before_norm.split())] if idx_before + len(ctx_before_norm.split()) < len(no2orig) else 0
+            # mejor: usar len del ctx_before en norm_orig
+            orig_start_pos = idx_before + len(ctx_before_norm)
+            if orig_start_pos < len(no2orig):
+                orig_start = no2orig[orig_start_pos]
+                # estimar end por ctx_after
+                if ctx_after_norm:
+                    idx_after = norm_orig.find(ctx_after_norm, orig_start_pos)
+                    if idx_after >= 0:
+                        orig_end = no2orig[idx_after - 1] + 1 if idx_after - 1 < len(no2orig) else len(original)
+                    else:
+                        orig_end = min(orig_start + 20, len(original))
+                else:
+                    orig_end = min(orig_start + 20, len(original))
+                gt_spans.append((orig_start, orig_end, etype))
+
+    return gt_spans
 
 
 # ─── Presidio mask ──────────────────────────────────────────────────────
@@ -133,6 +203,41 @@ def spans_to_mask(spans: List[Tuple[int, int, str, float]], text_len: int) -> Li
 
 # ─── Metrics ─────────────────────────────────────────────────────────────
 
+def span_iou(a_start, a_end, b_start, b_end) -> float:
+    """Intersection over Union de dos spans."""
+    inter = max(0, min(a_end, b_end) - max(a_start, b_start))
+    union = max(a_end - a_start, b_end - b_start, 1)
+    return inter / union
+
+
+@dataclass
+class PerTypeMetrics:
+    """Métricas para un tipo de entidad."""
+    tp: int = 0
+    fp: int = 0
+    fn: int = 0
+
+    @property
+    def precision(self) -> float:
+        return self.tp / (self.tp + self.fp) if (self.tp + self.fp) > 0 else 0.0
+
+    @property
+    def recall(self) -> float:
+        return self.tp / (self.tp + self.fn) if (self.tp + self.fn) > 0 else 0.0
+
+    @property
+    def f1(self) -> float:
+        p, r = self.precision, self.recall
+        return 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+
+    def __add__(self, other):
+        return PerTypeMetrics(
+            tp=self.tp + other.tp,
+            fp=self.fp + other.fp,
+            fn=self.fn + other.fn,
+        )
+
+
 @dataclass
 class EvalResult:
     """Resultados de evaluación para un documento."""
@@ -146,6 +251,10 @@ class EvalResult:
     fp_chars: int
     fn_chars: int
     true_negatives: int
+    # Métricas por tipo de entidad Carmen
+    per_type: dict  # {entity_type: PerTypeMetrics}
+    # Falsos positivos por tipo Presidio
+    fp_by_presidio_type: Counter
 
     @property
     def jaccard(self) -> float:
@@ -171,10 +280,53 @@ class EvalResult:
         return tn / total_non_gt if total_non_gt > 0 else 1.0
 
 
+def compute_per_type_metrics(
+    gt_spans: List[Tuple[int, int, str]],
+    pred_spans: List[Tuple[int, int, str, float]],
+    iou_threshold: float = 0.3,
+) -> Tuple[dict, Counter]:
+    """
+    Computa TP/FP/FN por tipo de entidad Carmen.
+    Aparea spans GT con spans de Presidio por IoU.
+    """
+    per_type = defaultdict(PerTypeMetrics)
+    fp_by_presidio = Counter()
+
+    gt_used = [False] * len(gt_spans)
+    pred_used = [False] * len(pred_spans)
+
+    # Para cada GT span, buscar el mejor match en pred
+    for gi, (gs, ge, gt) in enumerate(gt_spans):
+        best_idx = None
+        best_iou = 0
+        for pi, (ps, pe, pt, sc) in enumerate(pred_spans):
+            if pred_used[pi]:
+                continue
+            iou = span_iou(gs, ge, ps, pe)
+            if iou > best_iou:
+                best_iou = iou
+                best_idx = pi
+
+        if best_iou >= iou_threshold and best_idx is not None:
+            per_type[gt].tp += 1
+            gt_used[gi] = True
+            pred_used[best_idx] = True
+        else:
+            per_type[gt].fn += 1
+
+    # FPs: pred spans no usados
+    for pi, (ps, pe, pt, sc) in enumerate(pred_spans):
+        if not pred_used[pi]:
+            fp_by_presidio[pt] += 1
+
+    return dict(per_type), fp_by_presidio
+
+
 def evaluate_document(
     doc_id: str, original: str, gt_masked: str, analyzer: AnalyzerEngine
 ) -> EvalResult:
-    """Evalúa Presidio en un solo documento usando máscaras de caracteres."""
+    """Evalúa Presidio en un solo documento: métricas globales + por tipo."""
+    # --- Métricas por máscara de caracteres (globales) ---
     gt_mask = get_gt_mask(original, gt_masked)
     gt_spans_count = len(MARKER_PATTERN.findall(gt_masked))
 
@@ -202,6 +354,10 @@ def evaluate_document(
 
     union = gt_chars + fp_chars
 
+    # --- Métricas por tipo de entidad ---
+    gt_spans = get_gt_spans(original, gt_masked)
+    per_type, fp_by_presidio = compute_per_type_metrics(gt_spans, pred_spans)
+
     return EvalResult(
         doc_id=doc_id,
         gt_n_spans=gt_spans_count,
@@ -213,6 +369,8 @@ def evaluate_document(
         fp_chars=fp_chars,
         fn_chars=fn_chars,
         true_negatives=tn,
+        per_type=per_type,
+        fp_by_presidio_type=fp_by_presidio,
     )
 
 
@@ -376,6 +534,72 @@ def generate_report(data, results, elapsed, sample_size):
         pct = count / n_docs * 100
         report += f"| `{bucket}` | {count} | {pct:.1f}% |\n"
 
+    # ── Métricas por tipo de entidad Carmen ──
+    # Agregar per-type metrics de todos los documentos
+    aggregated_per_type = defaultdict(PerTypeMetrics)
+    global_fp_by_presidio = Counter()
+
+    for r in results:
+        for etype, m in r.per_type.items():
+            aggregated_per_type[etype] += m
+        for ptype, count in r.fp_by_presidio_type.items():
+            global_fp_by_presidio[ptype] += count
+
+    report += f"""
+---
+
+## Métricas por Tipo de Entidad (Carmen)
+
+| Tipo de Entidad | TP | FN | FP (Presidio) | Presición | Recall | F1 |
+|-----------------|----|----|---------------|-----------|--------|-----|
+"""
+
+    # Ordenar por frecuencia descendente
+    for etype in sorted(type_counter.keys(), key=lambda t: -type_counter[t]):
+        m = aggregated_per_type.get(etype, PerTypeMetrics())
+        report += (
+            f"| `{etype}` | {m.tp} | {m.fn} | — "
+            f"| {m.precision:.4f} | {m.recall:.4f} | {m.f1:.4f} |\n"
+        )
+
+    # Fila de totales (todos los tipos)
+    total_m = sum(aggregated_per_type.values(), PerTypeMetrics())
+    report += (
+        f"| **Total (todos)** | **{total_m.tp}** | **{total_m.fn}** | — "
+        f"| **{total_m.precision:.4f}** | **{total_m.recall:.4f}** | **{total_m.f1:.4f}** |\n"
+    )
+
+    # ── Totales excluyendo entidades no detectadas ──
+    def fmt_filtered_row(label, types_dict):
+        if not types_dict:
+            return ""
+        tm = sum(types_dict.values(), PerTypeMetrics())
+        excluded = set(aggregated_per_type.keys()) - set(types_dict.keys())
+        excl_names = ", ".join(sorted(excluded)) if excluded else ""
+        note = f" *(excluye: {excl_names})*" if excl_names else ""
+        return (
+            f"| **{label}** | **{tm.tp}** | **{tm.fn}** | — "
+            f"| **{tm.precision:.4f}** | **{tm.recall:.4f}** | **{tm.f1:.4f}** |{note}\n"
+        )
+
+    filtered_f1_0  = {t: m for t, m in aggregated_per_type.items() if m.f1 > 0}
+    filtered_f1_20 = {t: m for t, m in aggregated_per_type.items() if m.f1 >= 0.20}
+    filtered_f1_60 = {t: m for t, m in aggregated_per_type.items() if m.f1 >= 0.60}
+
+    report += fmt_filtered_row("Total (solo F1>0)", filtered_f1_0)
+    report += fmt_filtered_row("Total (solo F1≥0.20)", filtered_f1_20)
+    report += fmt_filtered_row("Total (solo F1≥0.60)", filtered_f1_60)
+
+    report += f"""
+### Falsos Positivos por tipo de entidad detectado por Presidio
+
+| Tipo Presidio | Spans FP |
+|---------------|----------|
+"""
+
+    for ptype, count in global_fp_by_presidio.most_common():
+        report += f"| `{ptype}` | {count} |\n"
+
     report += f"""
 ---
 
@@ -389,6 +613,35 @@ def generate_report(data, results, elapsed, sample_size):
         report += f"| `{etype}` | {count} |\n"
 
     report += f"""
+---
+
+## Comparativa con otros estudios
+
+| Estudio / Fuente | Dominio | Resultado Presidio |
+|---|---|---|
+| **Kotevski et al., 2022, Int J Med Inform** | Oncología radioterápica, Australia, 300 docs | P **0.8921**; R strict **0.8064**; **F1 strict 0.8471**; R relaxed **0.9039**; **F1 relaxed 0.8980** |
+| **Friebely, 2022, tesis/disertación** | SSN en emails Enron | Presidio OOTB: P **0.8347**, R **1.0000**, **F1 0.9099**. Regex ajustado: P **0.9878**, R **1.0000**, **F1 0.9938** |
+| **Text Anonymization Benchmark, Pilán et al., 2022** | Legal / European Court HR | Presidio default: P **0.761**, R **0.707**, **F1 ≈0.733**. Presidio +ORG: P **0.542**, R **0.782**, **F1 ≈0.640** |
+| **Benchmarking Advanced Text Anonymisation Methods, 2024** | Benchmark general anonimización | P **0.83**, R **0.88**, **F1 0.85** |
+| **Alrazihi et al., 2025** | Notas neuroquirúrgicas, UK, 200 docs | P **0.51**, R **0.74**, **F1 0.60** |
+| **Cross-Domain Transfer and Few-Shot Learning for PII Recognition, 2025** | TAB / Wikipedia / i2b2 | TAB **F1 0.649**; Wikipedia **0.642**; i2b2 **0.573**; media **0.621** |
+| **MathEd-PII, 2026** | Tutoring matemático | Presidio Large: P **0.254**, R **0.747**, **F1 0.379**. Presidio Transformer: P **0.230**, R **0.781**, **F1 0.355** |
+| **PIIBench, 2026** | Benchmark multi-fuente PII | Presidio fue el mejor baseline, pero solo **F1 0.1385** |
+| **Identification and Anonymization… Social Engineering Detection, 2026** | OSINT / social engineering | Presidio NER: **F1 0.74** en máquina no dedicada; **F1 0.79** en HPC |
+| **SurrogateShield, 2026** | PII en queries LLM | Presidio comparable types: P **85.50%**, R **92.91%**, **F1 89.05%**. BERTScore F1 **0.8159** |
+| **Este estudio (Carmen, 2026)** | **Textos clínicos español, 2000 docs** | **P {precision_global:.4f}**, **R {recall_global:.4f}**, **Jaccard {jaccard_global:.4f}**, **F1 {f1_global:.4f}** (global) |
+
+Los F1 de Presidio varían según dominio:
+| Contexto | Rango F1 |
+|---|---|
+| Tareas estrechas (SSN, emails Enron) | **0.85 – 0.99** |
+| Textos generales / legales en inglés | **0.60 – 0.85** |
+| Textos clínicos en inglés (Australia, UK) | **0.60 – 0.90** |
+| Benchmark multi-fuente (PIIBench) | **0.14** |
+| **Texto clínico español (Carmen)** | **{f1_global:.4f}** (global) |
+
+---
+
 ## Estadísticas por Documento
 
 | Estadística | Valor |
@@ -428,6 +681,31 @@ def generate_report(data, results, elapsed, sample_size):
     print(f"  F1:        {f1_global:.4f}")
     print(f"  Spans GT:  {total_gt_spans}  Pred: {total_pred_spans}")
     print(f"  TP chars: {total_intersection:,}  FP chars: {total_fp:,}  FN chars: {total_fn:,}")
+
+    print("\n📊 MÉTRICAS POR TIPO DE ENTIDAD (span-level, IoU≥0.3):")
+    print(f"  {'Tipo':30s} {'TP':>4s} {'FN':>4s} {'Prec':>7s} {'Rec':>7s} {'F1':>7s}")
+    print(f"  {'-'*30} {'-'*4} {'-'*4} {'-'*7} {'-'*7} {'-'*7}")
+    for etype in sorted(type_counter.keys(), key=lambda t: -type_counter[t]):
+        m = aggregated_per_type.get(etype, PerTypeMetrics())
+        if m.tp + m.fn > 0:
+            print(f"  {etype:30s} {m.tp:4d} {m.fn:4d} {m.precision:7.4f} {m.recall:7.4f} {m.f1:7.4f}")
+    total_m = sum(aggregated_per_type.values(), PerTypeMetrics())
+    print(f"  {'─'*30} {'─'*4} {'─'*4} {'─'*7} {'─'*7} {'─'*7}")
+    print(f"  {'TOTAL (todos)':30s} {total_m.tp:4d} {total_m.fn:4d} {total_m.precision:7.4f} {total_m.recall:7.4f} {total_m.f1:7.4f}")
+
+    # Totales excluyendo tipos no detectados
+    def print_filtered(label, types_dict):
+        if not types_dict:
+            return
+        tm = sum(types_dict.values(), PerTypeMetrics())
+        excluded = set(aggregated_per_type.keys()) - set(types_dict.keys())
+        excl_n = len(excluded)
+        print(f"  {label:30s} {tm.tp:4d} {tm.fn:4d} {tm.precision:7.4f} {tm.recall:7.4f} {tm.f1:7.4f}  (excluye {excl_n} tipos)")
+
+    print_filtered('TOTAL (solo F1>0)',   {t: m for t, m in aggregated_per_type.items() if m.f1 > 0})
+    print_filtered('TOTAL (solo F1≥0.20)', {t: m for t, m in aggregated_per_type.items() if m.f1 >= 0.20})
+    print_filtered('TOTAL (solo F1≥0.60)', {t: m for t, m in aggregated_per_type.items() if m.f1 >= 0.60})
+
     print(f"{'='*70}")
 
 

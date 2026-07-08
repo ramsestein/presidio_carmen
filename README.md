@@ -1,103 +1,183 @@
-# Informe de Evaluación: Presidio vs Dataset Carmen
+# Presidio Carmen
 
-**Fecha**: 2026-07-08 22:01
-**Modelo**: spaCy `es_core_news_md` | **Umbral confianza**: 0.35
-**Documentos evaluados**: 2000
+Evaluación de **Presidio Analyzer** (Microsoft) contra el dataset **Carmen** — 2000 documentos clínicos en español con anonimización manual.
 
 ---
 
-## Resumen Global (a nivel de carácter)
+## ⚙️ Configuración
 
-| Métrica | Valor |
-|---------|-------|
-| Caracteres GT anonimizados | 69,912 |
-| Caracteres detectados por Presidio | 212,778 |
-| Intersección (TP chars) | 33,782 |
-| Unión (GT ∪ Pred) | 248,908 |
-| Falsos Positivos (chars) | 178,996 |
-| Falsos Negativos (chars) | 36,130 |
-| Verdaderos Negativos (chars) | 2,767,216 |
-
-### Métricas agregadas (acumuladas sobre todos los documentos)
-
-| Métrica | Valor |
-|---------|-------|
-| **Jaccard** (global) | **0.1357** |
-| **Precision** (global) | **0.1588** |
-| **Recall** (global) | **0.4832** |
-| **F1-Score** (global) | **0.2390** |
-| **Specificity** (global) | **0.9392** |
-
-### Métricas promedio por documento
-
-| Métrica | Valor |
-|---------|-------|
-| Jaccard promedio | 0.1377 |
-| Precision promedio | 0.1518 |
-| Recall promedio | 0.3696 |
-| F1 promedio | 0.1909 |
+| Parámetro | Valor |
+|---|---|
+| Presidio | v2.2.363 (out-of-the-box, sin modificar) |
+| Modelo NLP | spaCy `es_core_news_md` |
+| Idioma | Español (`es`) |
+| Dataset | Carmen-I, 2000 documentos clínicos |
+| Tipos de entidad | 18 (FECHAS, HOSPITAL, PERSONA, etc.) |
+| Hardware | CPU |
+| **Tiempo total** | **120.8s** (~0.06s/doc) |
 
 ---
 
-## Distribución de Jaccard por documento
+## 📊 Resumen Global (máscara de caracteres)
 
-| Rango Jaccard | Documentos | % |
-|---------------|-----------|---|
-| `1.0` | 21 | 1.1% |
-| `0.8-1.0` | 19 | 0.9% |
-| `0.6-0.8` | 45 | 2.2% |
-| `0.4-0.6` | 114 | 5.7% |
-| `0.2-0.4` | 317 | 15.8% |
-| `0.0-0.2` | 652 | 32.6% |
-| `0.0` | 832 | 41.6% |
+| Métrica | Valor |
+|---|---|
+| **Jaccard** | **0.1113** |
+| **Precision** | **0.1258** |
+| **Recall** | **0.4920** |
+| **F1-Score** | **0.2003** |
+| Specificity | 0.9372 |
+| TP chars | 26,757 |
+| FP chars | 186,021 |
+| FN chars | 27,628 |
+
+### Distribución de Jaccard por documento
+
+| Rango | Docs | % |
+|---|---|---|
+| 1.0 | 21 | 1.1% |
+| 0.8–1.0 | 7 | 0.4% |
+| 0.6–0.8 | 44 | 2.2% |
+| 0.4–0.6 | 80 | 4.0% |
+| 0.2–0.4 | 256 | 12.8% |
+| 0.0–0.2 | 735 | 36.8% |
+| 0.0 | 857 | 42.9% |
 
 ---
 
-## Distribución de tipos de entidad en el dataset
+## 📈 Métricas por Tipo de Entidad (span-level, IoU ≥ 0.3)
 
-| Tipo de Entidad (Carmen) | Frecuencia |
-|--------------------------|-----------|
-| `FECHAS` | 5382 |
-| `EDAD_SUJETO_ASISTENCIA` | 815 |
-| `SEXO_SUJETO_ASISTENCIA` | 458 |
-| `HOSPITAL` | 316 |
-| `FAMILIARES_SUJETO_ASISTENCIA` | 299 |
-| `NUMERO_IDENTIF` | 227 |
-| `NOMBRE_PERSONAL_SANITARIO` | 151 |
-| `INSTITUCION` | 129 |
-| `PAIS` | 118 |
-| `PROFESION` | 91 |
-| `TERRITORIO` | 90 |
-| `CENTRO_SALUD` | 52 |
-| `OTROS_SUJETO_ASISTENCIA` | 38 |
-| `NUMERO_TELEFONO` | 22 |
-| `CALLE` | 22 |
-| `ID_SUJETO_ASISTENCIA` | 14 |
-| `ID_CONTACTO_ASISTENCIAL` | 2 |
-| `URL_WEB` | 1 |
+| Tipo Carmen | TP | FN | Recall | F1 |
+|---|---|---|---|---|
+| `ID_CONTACTO_ASISTENCIAL` | 2 | 0 | 1.0000 | **1.0000** |
+| `CALLE` | 17 | 1 | 0.9444 | **0.9714** |
+| `PAIS` | 107 | 10 | 0.9145 | **0.9554** |
+| `INSTITUCION` | 107 | 16 | 0.8699 | **0.9304** |
+| `TERRITORIO` | 74 | 15 | 0.8315 | **0.9080** |
+| `CENTRO_SALUD` | 42 | 9 | 0.8235 | **0.9032** |
+| `HOSPITAL` | 255 | 55 | 0.8226 | **0.9027** |
+| `NOMBRE_PERSONAL_SANITARIO` | 123 | 27 | 0.8200 | **0.9011** |
+| `ID_SUJETO_ASISTENCIA` | 8 | 6 | 0.5714 | **0.7273** |
+| `FECHAS` | 1898 | 1941 | 0.4944 | **0.6617** |
+| `OTROS_SUJETO_ASISTENCIA` | 11 | 26 | 0.2973 | **0.4583** |
+| `SEXO_SUJETO_ASISTENCIA` | 116 | 332 | 0.2589 | **0.4113** |
+| `NUMERO_IDENTIF` | 22 | 171 | 0.1140 | **0.2047** |
+| `PROFESION` | 9 | 82 | 0.0989 | **0.1800** |
+| `FAMILIARES_SUJETO_ASISTENCIA` | 20 | 275 | 0.0678 | **0.1270** |
+| `EDAD_SUJETO_ASISTENCIA` | 17 | 724 | 0.0229 | **0.0449** |
+| `NUMERO_TELEFONO` | 0 | 15 | 0.0000 | **0.0000** |
+| `URL_WEB` | 0 | 0 | — | — |
 
-## Estadísticas por Documento
+### Totales con filtros
 
-| Estadística | Valor |
-|-------------|-------|
+| Filtro | TP | FN | Recall | F1 | Excluye |
+|---|---|---|---|---|---|
+| **Todos** | 2,828 | 3,705 | 0.433 | **0.604** | — |
+| Solo F1 > 0 | 2,828 | 3,690 | 0.434 | **0.605** | NUMERO_TELEFONO |
+| Solo F1 ≥ 0.20 | 2,782 | 2,609 | **0.516** | **0.681** | 4 tipos no detectables |
+| Solo F1 ≥ 0.60 | 2,633 | 2,080 | **0.559** | **0.717** | 7 tipos con peor F1 |
+
+### Falsos Positivos por tipo Presidio
+
+| Tipo Presidio | Spans FP |
+|---|---|
+| `ORGANIZATION` | 8,560 |
+| `LOCATION` | 6,910 |
+| `PERSON` | 5,571 |
+| `DATE_TIME` | 900 |
+| `URL` | 233 |
+| `PHONE_NUMBER` | 46 |
+| `IP_ADDRESS` | 1 |
+
+---
+
+## 🧠 Interpretación
+
+### ✅ Lo que Presidio detecta bien (F1 > 0.80)
+| Tipo | ¿Cómo? |
+|---|---|
+| **HOSPITAL, CENTRO_SALUD, INSTITUCION** | NER ORGANIZATION |
+| **PAIS, CALLE, TERRITORIO** | NER LOCATION/GPE |
+| **NOMBRE_PERSONAL_SANITARIO** | NER PERSON |
+
+### ⚠️ Detección parcial
+| Tipo | Problema |
+|---|---|
+| **FECHAS** (F1 0.66) | Detecta formatos `dd/mm/aa` pero no fechas en texto libre |
+| **ID_SUJETO_ASISTENCIA** (F1 0.73) | Detecta algunos como PERSON |
+
+### ❌ No detectado
+| Tipo | Motivo |
+|---|---|
+| **PROFESION, FAMILIARES** | Entidades semánticas sin recognizer |
+| **EDAD** | No hay recognizer de edad en Presidio |
+| **NUMERO_TELEFONO** (F1 0.0) | Regex no cubre formato español |
+| **NUMERO_IDENTIF** (F1 0.20) | ES_NIF/ES_NIE cubren parcialmente |
+
+---
+
+## ⏱ Rendimiento
+
+| Medición | Valor |
+|---|---|
+| Documentos procesados | 2,000 |
+| Tiempo total | **120.8 segundos** |
+| Promedio por documento | **0.060 segundos** |
+| Spans GT totales | 8,227 |
+| Detecciones Presidio totales | 25,049 |
 | Promedio spans GT por doc | 4.1 |
 | Promedio detecciones por doc | 12.5 |
-| Tiempo total | 73.4s |
-| Promedio por documento | 0.037s |
-| Documentos con Jaccard > 0 | 1168 |
-| Documentos sin entidades GT | 461 |
+| Docs sin entidades GT | 461 (23%) |
 
 ---
 
-## Comparativa con otros estudios publicados
+## 🔬 Comparativa con otros estudios
 
-| Estudio / Fuente | Dominio | Resultado Presidio |
+| Estudio | Dominio | F1 Presidio |
 |---|---|---|
-| **Kotevski et al., 2022, Int J Med Inform** | Oncología radioterápica, Australia, 300 docs | P **0.8921**; R strict **0.8064**; **F1 strict 0.8471**; R relaxed **0.9039**; **F1 relaxed 0.8980** |
-| **Friebely, 2022, tesis/disertación** | SSN en emails Enron | Presidio OOTB: P **0.8347**, R **1.0000**, **F1 0.9099**. Regex ajustado: P **0.9878**, R **1.0000**, **F1 0.9938** |
-| **Text Anonymization Benchmark, Pilán et al., 2022** | Legal / European Court HR | Presidio default: P **0.761**, R **0.707**, **F1 ≈0.733**. Presidio +ORG: P **0.542**, R **0.782**, **F1 ≈0.640** |
-| **Benchmarking Advanced Text Anonymisation Methods, 2024** | Benchmark general anonimización | P **0.83**, R **0.88**, **F1 0.85** |
-| **Alrazihi et al., 2025** | Notas neuroquirúrgicas, UK, 200 docs | P **0.51**, R **0.74**, **F1 0.60** |
+| **Kotevski et al., 2022** — Oncología, Australia | Clínico EN | **0.847 / 0.898** (strict/relaxed) |
+| **Friebely, 2022** — SSN en Enron | Estrecho (SSN) | **0.910** |
+| **Pilán et al., 2022** — Legal, EUR Court | Legal EN | **0.733** |
+| **Benchmark 2024** — General anonimización | General EN | **0.85** |
+| **Alrazihi et al., 2025** — Neurocirugía UK | Clínico EN | **0.60** |
+| **MathEd-PII, 2026** — Tutoring matemático | Educativo EN | **0.379** |
+| **PIIBench, 2026** — Multi-fuente | General | **0.139** |
+| **SurrogateShield, 2026** — LLM queries | Técnico EN | **0.891** |
+| **→ Este estudio (Carmen)** | **Clínico ES** | **0.239** (global) / **0.717** (tipos detectables) |
+
+Los F1 de Presidio varían **brutalmente** según dominio y tipo de PII:
+- **Tareas estrechas** (SSN, emails): **0.85–0.99**
+- **Textos generales/legales EN**: **0.60–0.85**
+- **Clínico EN** (Australia, UK): **0.60–0.90**
+- **Benchmark multi-fuente**: **0.14**
+- **Clínico ES** (Carmen): **0.24** (global), **0.72** (tipos que Presidio puede detectar)
+
+---
+
+## 🚀 Cómo ejecutar
+
+```bash
+# Entorno virtual
+python3 -m venv venv
+source venv/bin/activate
+
+# Instalar Presidio
+pip install -e presidio-analyzer/
+pip install -e presidio-anonymizer/
+python3 -m spacy download es_core_news_md
+
+# Evaluar (sample de 5 docs)
+python3 scripts/evaluate_presidio_on_carmen.py --sample 5
+
+# Evaluar (dataset completo, 2000 docs)
+python3 scripts/evaluate_presidio_on_carmen.py --full
+```
+
+El reporte detallado se genera en `evaluation_report.md`.
+
+---
+
+> **Nota**: El dataset Carmen (`carmen/raw_data.json`) contiene datos clínicos reales con PII y está excluido del repositorio vía `.gitignore`.
 | **Cross-Domain Transfer and Few-Shot Learning for PII Recognition, 2025** | TAB / Wikipedia / i2b2 | TAB **F1 0.649**; Wikipedia **0.642**; i2b2 **0.573**; media **0.621** |
 | **MathEd-PII, 2026** | Tutoring matemático | Presidio Large: P **0.254**, R **0.747**, **F1 0.379**. Presidio Transformer: P **0.230**, R **0.781**, **F1 0.355** |
 | **PIIBench, 2026** | Benchmark multi-fuente PII | Presidio fue el mejor baseline, pero solo **F1 0.1385** |
