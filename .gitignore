@@ -1,6 +1,9 @@
 # Dataset Carmen (datos clínicos reales con PII - NO SUBIR)
 carmen/
 
+# Dataset MEDDOCAN (datos clínicos con PII - NO SUBIR)
+meddocan/
+
 # Entorno virtual
 venv/
 .venv/
